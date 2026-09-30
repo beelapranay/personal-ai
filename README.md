@@ -85,9 +85,9 @@ python3 -m unittest discover -s tests -v
 
 ## V1 limits
 
-The extractor reads `message.text` only. Some messages on newer macOS versions
-store their content in Apple's archived `attributedBody` field; the script skips
-those messages for now.
+The extractor reads `message.text` and, when that is empty, decodes the plain
+string from Apple's archived `attributedBody` field. Formatting, mentions, and
+attachments are dropped; attachment-only messages are skipped.
 
 There is no redaction layer yet. The model may repeat verification codes,
 transaction details, phone numbers, or other sensitive text in its summary.

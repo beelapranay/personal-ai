@@ -14,6 +14,23 @@ def apple_ns(value: datetime) -> int:
     return app._apple_nanoseconds(value)
 
 
+def attributed_body(text: str) -> bytes:
+    """Build a minimal typedstream blob shaped like Messages' attributedBody."""
+    encoded = text.encode("utf-8")
+    if len(encoded) < 0x80:
+        length = bytes([len(encoded)])
+    else:
+        length = b"\x81" + len(encoded).to_bytes(2, "little")
+    return (
+        b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84"
+        b"\x12NSAttributedString\x00\x84\x84\x08NSObject\x00\x85\x92"
+        b"\x84\x84\x84\x08NSString\x01\x94\x84\x01+"
+        + length
+        + encoded
+        + b"\x86\x84\x02iI\x01"
+    )
+
+
 class FakeClient:
     def __init__(self) -> None:
         self.calls = []
@@ -51,6 +68,7 @@ class IMessageSummaryTests(unittest.TestCase):
             CREATE TABLE message (
                 ROWID INTEGER PRIMARY KEY,
                 text TEXT,
+                attributedBody BLOB,
                 date INTEGER,
                 is_from_me INTEGER,
                 handle_id INTEGER
@@ -59,15 +77,33 @@ class IMessageSummaryTests(unittest.TestCase):
         )
         connection.execute("INSERT INTO handle (ROWID, id) VALUES (1, ?)", ("+15551234567",))
         rows = [
-            ("too early", datetime(2026, 9, 27, 23, 59, tzinfo=timezone.utc), 0, 1),
-            ("hello", datetime(2026, 9, 28, 9, 30, tzinfo=timezone.utc), 0, 1),
-            ("reply", datetime(2026, 9, 28, 9, 31, tzinfo=timezone.utc), 1, None),
-            (None, datetime(2026, 9, 28, 10, 0, tzinfo=timezone.utc), 0, 1),
-            ("too late", datetime(2026, 9, 29, 0, 0, tzinfo=timezone.utc), 0, 1),
+            ("too early", None, datetime(2026, 9, 27, 23, 59, tzinfo=timezone.utc), 0, 1),
+            ("hello", None, datetime(2026, 9, 28, 9, 30, tzinfo=timezone.utc), 0, 1),
+            ("reply", None, datetime(2026, 9, 28, 9, 31, tzinfo=timezone.utc), 1, None),
+            (None, None, datetime(2026, 9, 28, 10, 0, tzinfo=timezone.utc), 0, 1),
+            (
+                None,
+                attributed_body("from blob"),
+                datetime(2026, 9, 28, 10, 5, tzinfo=timezone.utc),
+                0,
+                1,
+            ),
+            (
+                None,
+                attributed_body("\ufffc"),
+                datetime(2026, 9, 28, 10, 10, tzinfo=timezone.utc),
+                0,
+                1,
+            ),
+            ("too late", None, datetime(2026, 9, 29, 0, 0, tzinfo=timezone.utc), 0, 1),
         ]
         connection.executemany(
-            "INSERT INTO message (text, date, is_from_me, handle_id) VALUES (?, ?, ?, ?)",
-            [(text, apple_ns(when), mine, handle) for text, when, mine, handle in rows],
+            "INSERT INTO message (text, attributedBody, date, is_from_me, handle_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (text, body, apple_ns(when), mine, handle)
+                for text, body, when, mine, handle in rows
+            ],
         )
         connection.commit()
         connection.close()
@@ -76,7 +112,9 @@ class IMessageSummaryTests(unittest.TestCase):
         messages = app.read_messages_for_day(
             self.db_path, date(2026, 9, 28), timezone.utc
         )
-        self.assertEqual([item["text"] for item in messages], ["hello", "reply"])
+        self.assertEqual(
+            [item["text"] for item in messages], ["hello", "reply", "from blob"]
+        )
         self.assertEqual(messages[0]["sender"], "+15551234567")
         self.assertEqual(messages[1]["sender"], "Me")
         self.assertEqual(messages[0]["timestamp"], "2026-09-28T09:30:00+00:00")
@@ -96,7 +134,7 @@ class IMessageSummaryTests(unittest.TestCase):
         tool_message = client.calls[1]["messages"][-1]
         self.assertEqual(tool_message["role"], "tool")
         self.assertEqual(tool_message["tool_name"], "get_recent_messages")
-        self.assertEqual(len(json.loads(tool_message["content"])), 3)
+        self.assertEqual(len(json.loads(tool_message["content"])), 4)
         self.assertEqual(client.calls[0]["options"]["num_ctx"], 16_384)
         self.assertEqual(client.calls[1]["options"]["num_ctx"], 16_384)
         self.assertEqual(usage_stats[0]["prompt_tokens"], 120)
@@ -128,8 +166,16 @@ class IMessageSummaryTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["text"] for item in messages],
-            ["too early", "hello", "reply"],
+            ["too early", "hello", "reply", "from blob"],
         )
+
+    def test_decodes_attributed_body(self) -> None:
+        self.assertEqual(app.decode_attributed_body(attributed_body("hi 👋")), "hi 👋")
+        long_text = "x" * 300
+        self.assertEqual(app.decode_attributed_body(attributed_body(long_text)), long_text)
+        self.assertIsNone(app.decode_attributed_body(None))
+        self.assertIsNone(app.decode_attributed_body(b"not a typedstream"))
+        self.assertIsNone(app.decode_attributed_body(attributed_body("hello")[:-10]))
 
     def test_formats_usage_without_message_content(self) -> None:
         output = app.format_usage_stats(

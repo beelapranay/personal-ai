@@ -57,6 +57,58 @@ def _datetime_from_apple_nanoseconds(value: int, local_tz: tzinfo) -> datetime:
     return (APPLE_EPOCH + timedelta(microseconds=value // 1_000)).astimezone(local_tz)
 
 
+def decode_attributed_body(blob: bytes | None) -> str | None:
+    """Extract plain text from an attributedBody typedstream blob.
+
+    Newer macOS versions often leave message.text NULL and store the content
+    as an archived NSAttributedString. The plain string follows the NSString
+    class name as a '+' type tag, a length, and UTF-8 bytes.
+    """
+    if not blob:
+        return None
+    marker = blob.find(b"NSString")
+    if marker == -1:
+        return None
+    # A few class-info bytes sit between the class name and the '+' tag.
+    tag = blob.find(b"+", marker + len(b"NSString"), marker + len(b"NSString") + 16)
+    if tag == -1:
+        return None
+
+    position = tag + 1
+    if position >= len(blob):
+        return None
+    # typedstream integers: small values inline, 0x81/0x82 prefix 2/4-byte
+    # little-endian values.
+    prefix = blob[position]
+    if prefix == 0x81:
+        length = int.from_bytes(blob[position + 1 : position + 3], "little")
+        position += 3
+    elif prefix == 0x82:
+        length = int.from_bytes(blob[position + 1 : position + 5], "little")
+        position += 5
+    else:
+        length = prefix
+        position += 1
+
+    raw = blob[position : position + length]
+    if len(raw) != length:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _message_text(text: str | None, attributed_body: bytes | None) -> str | None:
+    # U+FFFC marks where an attachment sat; it carries no readable content.
+    for candidate in (text, decode_attributed_body(attributed_body)):
+        if candidate is not None:
+            cleaned = candidate.replace("\ufffc", "").strip()
+            if cleaned:
+                return cleaned
+    return None
+
+
 def _read_only_connection(db_path: Path) -> sqlite3.Connection:
     resolved = db_path.expanduser().resolve()
     if not resolved.is_file():
@@ -107,6 +159,7 @@ def read_messages_for_range(
     query = """
         SELECT
             m.text AS text,
+            m.attributedBody AS attributed_body,
             m.date AS message_date,
             m.is_from_me AS is_from_me,
             h.id AS handle_id
@@ -114,8 +167,10 @@ def read_messages_for_range(
         LEFT JOIN handle AS h ON h.ROWID = m.handle_id
         WHERE m.date >= ?
           AND m.date < ?
-          AND m.text IS NOT NULL
-          AND TRIM(m.text) != ''
+          AND (
+              (m.text IS NOT NULL AND TRIM(m.text) != '')
+              OR m.attributedBody IS NOT NULL
+          )
         ORDER BY m.date ASC, m.ROWID ASC
     """
 
@@ -129,6 +184,9 @@ def read_messages_for_range(
 
     messages: list[dict[str, str]] = []
     for row in rows:
+        text = _message_text(row["text"], row["attributed_body"])
+        if text is None:
+            continue
         sender = "Me" if row["is_from_me"] else (row["handle_id"] or "Unknown sender")
         timestamp = _datetime_from_apple_nanoseconds(
             int(row["message_date"]), local_tz
@@ -136,7 +194,7 @@ def read_messages_for_range(
         messages.append(
             {
                 "sender": str(sender),
-                "text": str(row["text"]),
+                "text": text,
                 "timestamp": timestamp,
             }
         )
