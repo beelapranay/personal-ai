@@ -167,6 +167,9 @@ def read_messages_for_range(
         LEFT JOIN handle AS h ON h.ROWID = m.handle_id
         WHERE m.date >= ?
           AND m.date < ?
+          -- Tapbacks (2000s) and their removals (3000s) are separate rows
+          -- whose text only quotes the message they react to.
+          AND COALESCE(m.associated_message_type, 0) NOT BETWEEN 2000 AND 3999
           AND (
               (m.text IS NOT NULL AND TRIM(m.text) != '')
               OR m.attributedBody IS NOT NULL

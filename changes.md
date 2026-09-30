@@ -2,6 +2,17 @@
 
 ## 2026-09-30
 
+### Fix: drop tapbacks and reaction removals
+
+Tapbacks are stored as separate message rows (`associated_message_type`
+2000–2006, removals 3000–3006) whose text only quotes the message they react
+to, e.g. `Loved “see you at 7”`. They duplicated content and could be read as
+things the sender wrote.
+
+- Query excludes `associated_message_type` 2000–3999; `NULL` is treated as a
+  normal message.
+- Test fixtures include a tapback and a removal on the target day.
+
 ### Fix: read messages stored in `attributedBody`
 
 Newer macOS versions often leave `message.text` empty and store the message in

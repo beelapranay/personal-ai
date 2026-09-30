@@ -71,7 +71,8 @@ class IMessageSummaryTests(unittest.TestCase):
                 attributedBody BLOB,
                 date INTEGER,
                 is_from_me INTEGER,
-                handle_id INTEGER
+                handle_id INTEGER,
+                associated_message_type INTEGER DEFAULT 0
             );
             """
         )
@@ -103,6 +104,18 @@ class IMessageSummaryTests(unittest.TestCase):
             [
                 (text, body, apple_ns(when), mine, handle)
                 for text, body, when, mine, handle in rows
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO message "
+            "(text, date, is_from_me, handle_id, associated_message_type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (text, apple_ns(datetime(2026, 9, 28, 9, minute, tzinfo=timezone.utc)), 1, None, kind)
+                for text, minute, kind in [
+                    ("Loved “hello”", 32, 2000),
+                    ("Removed a heart from “hello”", 33, 3000),
+                ]
             ],
         )
         connection.commit()
