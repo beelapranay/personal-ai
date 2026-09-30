@@ -13,6 +13,13 @@ things the sender wrote.
   normal message.
 - Test fixtures include a tapback and a removal on the target day.
 
+#### Future implementation
+
+- [openclaw/imsg#8](https://github.com/openclaw/imsg/pull/8): Preserve tapbacks
+  as structured reactions attached to their target message instead of dropping
+  them. A later version can use `associated_message_guid` to resolve the target
+  and apply reaction removals to the stored reaction state.
+
 ### Fix: read messages stored in `attributedBody`
 
 Newer macOS versions often leave `message.text` empty and store the message in
